@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   HeartPulse, Siren, Sun, MessageCircle, FolderOpen, Settings,
@@ -6,12 +7,13 @@ import {
   Activity, Thermometer, Trash2, Clock, Volume2, VolumeX, Bell, Plus,
   MicOff, Waves, X, Smile, Meh, Frown, Sparkle, 
   Stethoscope as DoctorIcon, Utensils, Share2, UserPlus, PhoneForwarded, Lock, ShieldCheck,
-  ChevronRight, MapPin, File as FileIcon, Key, StickyNote, Link2
+  ChevronRight, MapPin, File as FileIcon, Key, StickyNote, Link2, Brain, AudioLines, Square
 } from 'lucide-react';
-import { Medication, Injection, VaultItem, DiaryEntry, Stats, EmergencyContact, Pharmacy, SafetyAnalysis, FlareForecast, DietPlan, Symptom } from './types';
+import { Medication, Injection, VaultItem, DiaryEntry, Stats, EmergencyContact, Pharmacy, SafetyAnalysis, FlareForecast, DietPlan, Symptom, DiaryInsight } from './types';
 import { VIVID_THEME, LIFESTYLE_TAGS, QUADRANTS, DAYS_OF_WEEK } from './constants';
 import * as gemini from './services/geminiService';
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+// Fix: Renamed Blob to GenAIBlob to avoid conflict with native Blob
+import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenAIBlob } from '@google/genai';
 
 // --- Audio Helpers ---
 function encode(bytes: Uint8Array) {
@@ -40,7 +42,8 @@ async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: 
   return buffer;
 }
 
-function createBlob(data: Float32Array): Blob {
+// Fix: Updated return type to GenAIBlob
+function createBlob(data: Float32Array): GenAIBlob {
   const l = data.length;
   const int16 = new Int16Array(l);
   for (let i = 0; i < l; i++) int16[i] = data[i] * 32768;
@@ -153,6 +156,7 @@ const App: React.FC = () => {
   const [pharmacy, setPharmacy] = useState<Pharmacy>({ name: '', phone: '', email: '' });
   const [alarmsEnabled, setAlarmsEnabled] = useState(true);
   const [dietPlan, setDietPlan] = useState<DietPlan | null>(null);
+  const [diaryInsight, setDiaryInsight] = useState<DiaryInsight | null>(null);
   
   // UI / Interaction State
   const [isLiveActive, setIsLiveActive] = useState(false);
@@ -169,6 +173,8 @@ const App: React.FC = () => {
   const [diaryInput, setDiaryInput] = useState("");
   const [dayQuality, setDayQuality] = useState<'good' | 'neutral' | 'bad'>('neutral');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [isSTTActive, setIsSTTActive] = useState(false);
+  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
 
   // Symptom Form State
   const [symptomInput, setSymptomInput] = useState("");
@@ -188,6 +194,8 @@ const App: React.FC = () => {
   const liveSessionRef = useRef<any>(null);
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextStartTimeRef = useRef(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Persistence Load
   useEffect(() => {
@@ -237,6 +245,68 @@ const App: React.FC = () => {
 
   const filteredInjections = (status: 'pending' | 'taken') => 
     injections.filter(i => (status === 'taken' ? i.status !== 'pending' : i.status === 'pending'));
+
+  // --- Voice Features ---
+  const startSTT = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return alert("Speech Recognition not supported in this browser.");
+    
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsSTTActive(true);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setDiaryInput(prev => prev + (prev ? ' ' : '') + transcript);
+    };
+    recognition.onerror = () => setIsSTTActive(false);
+    recognition.onend = () => setIsSTTActive(false);
+    recognition.start();
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64data = reader.result as string;
+          const newItem: VaultItem = {
+            id: Date.now(),
+            name: `Voice Note ${new Date().toLocaleTimeString()}`,
+            date: new Date().toLocaleDateString(),
+            data: base64data,
+            type: 'audio',
+            mime: 'audio/webm'
+          };
+          setVault(p => [newItem, ...p]);
+          setDiaryInput(prev => prev + (prev ? '\n' : '') + "[Attached Voice Note]");
+          setIsVoiceRecording(false);
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+
+      mediaRecorder.start();
+      setIsVoiceRecording(true);
+    } catch (e) {
+      console.error("Recording failed", e);
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    mediaRecorderRef.current?.stop();
+  };
 
   // --- REWIRED Real-time Voice Logic (Doctor B) ---
   const startLiveSession = async () => {
@@ -404,6 +474,19 @@ const App: React.FC = () => {
 
   const deleteSymptomLog = (id: number) => {
     setSymptoms(p => p.filter(s => s.id !== id));
+  };
+
+  const generateDiaryAnalysis = async () => {
+    if (diary.length === 0) return alert("Record more logs first.");
+    setLoading(true);
+    try {
+      const result = await gemini.analyzeDiaryInsights(diary, symptoms);
+      setDiaryInsight(result);
+    } catch (e) {
+      alert("Doctor B is busy. Please try again later.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const triggerVoiceAlert = async (text: string) => {
@@ -591,16 +674,51 @@ const App: React.FC = () => {
                   ))}
                 </div>
 
-                <textarea 
-                  value={diaryInput} 
-                  onChange={e => setDiaryInput(e.target.value)} 
-                  placeholder="Clinical notes for today..." 
-                  className="w-full p-4 rounded-[2rem] border-2 border-gray-100 text-sm font-bold min-h-[120px] outline-none focus:border-blue-400 transition-all"
-                />
+                <div className="relative">
+                  <textarea 
+                    value={diaryInput} 
+                    onChange={e => setDiaryInput(e.target.value)} 
+                    placeholder="Clinical notes for today..." 
+                    className="w-full p-4 rounded-[2rem] border-2 border-gray-100 text-sm font-bold min-h-[120px] outline-none focus:border-blue-400 transition-all pr-12"
+                  />
+                  <div className="absolute right-4 bottom-4 flex flex-col gap-2">
+                    <button onClick={startSTT} className={`p-3 rounded-full shadow-md transition-all ${isSTTActive ? 'bg-teal-500 text-white animate-pulse' : 'bg-white text-teal-600 border border-teal-100'}`}>
+                      <Mic size={18}/>
+                    </button>
+                    <button onClick={isVoiceRecording ? stopVoiceRecording : startVoiceRecording} className={`p-3 rounded-full shadow-md transition-all ${isVoiceRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-white text-red-600 border border-red-100'}`}>
+                      {isVoiceRecording ? <Square size={18}/> : <AudioLines size={18}/>}
+                    </button>
+                  </div>
+                </div>
 
                 <button onClick={saveDiaryEntry} className="w-full py-5 bg-blue-600 text-white rounded-[2rem] font-black uppercase text-sm shadow-xl active:scale-95 transition-all">Submit Daily Log</button>
               </div>
             </DashboardCard>
+
+            {/* AI DIARY INSIGHTS SECTION */}
+            <div className="mb-8">
+               <button onClick={generateDiaryAnalysis} className="w-full py-4 bg-teal-50 text-teal-700 rounded-[2rem] border-2 border-dashed border-teal-200 font-black uppercase text-xs flex items-center justify-center gap-3 active:scale-95 transition-all shadow-sm">
+                 <Brain size={20} className="animate-pulse" /> Doctor B's Clinical Reflection
+               </button>
+               {diaryInsight && (
+                 <div className="mt-4 p-6 bg-white rounded-[2.5rem] border-2 border-teal-100 shadow-lg animate-in fade-in slide-in-from-bottom-4">
+                    <h4 className="text-[10px] font-black uppercase text-teal-600 mb-3 tracking-widest flex items-center gap-2"><Sparkle size={12}/> AI Clinical Assessment</h4>
+                    <p className="text-sm font-bold text-teal-900 leading-relaxed mb-4">{diaryInsight.clinicalSummary}</p>
+                    <div className="bg-teal-50/50 p-4 rounded-2xl border border-teal-50 mb-4">
+                       <p className="text-[9px] font-black uppercase text-teal-400 mb-1">Mood Trend</p>
+                       <p className="text-xs font-bold text-teal-800">{diaryInsight.moodTrend}</p>
+                    </div>
+                    <div className="space-y-2">
+                       {diaryInsight.recommendations.map((rec, i) => (
+                         <div key={i} className="flex gap-2 text-xs font-bold text-teal-700">
+                            <span className="text-teal-400 shrink-0">•</span>
+                            <span>{rec}</span>
+                         </div>
+                       ))}
+                    </div>
+                 </div>
+               )}
+            </div>
 
             <DashboardCard colorClass={VIVID_THEME.red} title="Symptom Tracker" icon={Thermometer}>
                <div className="space-y-4">
@@ -759,7 +877,11 @@ const App: React.FC = () => {
                       <button onClick={(e) => { e.stopPropagation(); setVault(p => p.filter(x => x.id !== v.id)); }} className="absolute top-4 right-4 z-10 p-2 bg-black/40 text-white rounded-full hover:bg-red-500 transition-all">
                         <Trash2 size={14}/>
                       </button>
-                      {v.mime === 'application/pdf' ? (
+                      {v.type === 'audio' ? (
+                        <div className="w-full h-32 bg-amber-50 flex items-center justify-center rounded-2xl mb-2">
+                           <AudioLines size={40} className="text-amber-400" />
+                        </div>
+                      ) : v.mime === 'application/pdf' ? (
                         <div className="w-full h-32 bg-gray-50 flex items-center justify-center rounded-2xl mb-2">
                           <FileIcon size={40} className="text-gray-400" />
                         </div>
@@ -767,6 +889,9 @@ const App: React.FC = () => {
                         <img src={v.data} className="w-full h-32 object-cover rounded-2xl mb-2" />
                       )}
                       <h4 className="font-black text-[10px] truncate px-1">{v.name}</h4>
+                      {v.type === 'audio' && (
+                        <button onClick={() => { const a = new Audio(v.data); a.play(); }} className="mt-2 w-full py-2 bg-amber-100 text-amber-700 rounded-lg font-black text-[8px] uppercase">Play Note</button>
+                      )}
                    </div>
                 ))}
              </div>

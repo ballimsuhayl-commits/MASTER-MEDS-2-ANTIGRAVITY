@@ -28,7 +28,7 @@ export interface VaultItem {
   name: string;
   date: string;
   data: string;
-  type: 'image' | 'pdf';
+  type: 'image' | 'pdf' | 'audio';
   mime?: string;
 }
 
@@ -39,6 +39,7 @@ export interface DiaryEntry {
   quality: 'good' | 'neutral' | 'bad';
   time: string;
   date: string;
+  aiInsight?: string;
 }
 
 export interface Symptom {
@@ -84,4 +85,10 @@ export interface DietPlan {
   preferredFoods: string[];
   meals: { name: string; desc: string }[];
   hydrationGoal: string;
+}
+
+export interface DiaryInsight {
+  clinicalSummary: string;
+  moodTrend: string;
+  recommendations: string[];
 }

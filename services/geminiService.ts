@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, Chat, Modality } from "@google/genai";
-import { Medication, DiaryEntry, SafetyAnalysis, FlareForecast, DietPlan, Symptom, Injection } from "../types";
+import { Medication, DiaryEntry, SafetyAnalysis, FlareForecast, DietPlan, Symptom, Injection, DiaryInsight } from "../types";
 
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -71,6 +71,36 @@ export const runClinicalAnalysis = async (
           summary: { type: Type.STRING }
         },
         required: ["interactions", "correlations", "summary"]
+      }
+    }
+  });
+
+  return JSON.parse(response.text || '{}');
+};
+
+/**
+ * Analyzes the patient's diary and symptoms for patterns and clinical insights.
+ */
+export const analyzeDiaryInsights = async (diary: DiaryEntry[], symptoms: Symptom[]): Promise<DiaryInsight> => {
+  const ai = getAIClient();
+  const prompt = `Review the following clinical logs and symptoms. Provide a professional assessment.
+    Logs: ${diary.slice(0, 10).map(d => `[${d.date}] ${d.quality}: ${d.text}`).join(' | ')}
+    Symptoms: ${symptoms.slice(0, 10).map(s => `[${s.date}] ${s.name} (Severity: ${s.severity})`).join(' | ')}`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: prompt,
+    config: {
+      systemInstruction: "You are a specialist reviewing a patient's daily logs. Identify trends, mood correlations, and health warnings.",
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          clinicalSummary: { type: Type.STRING },
+          moodTrend: { type: Type.STRING },
+          recommendations: { type: Type.ARRAY, items: { type: Type.STRING } }
+        },
+        required: ["clinicalSummary", "moodTrend", "recommendations"]
       }
     }
   });
