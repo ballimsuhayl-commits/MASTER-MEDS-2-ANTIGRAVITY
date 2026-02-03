@@ -228,7 +228,7 @@ const App: React.FC = () => {
     setIsLiveActive(true);
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY });
       const inputAudioCtx = new AudioContext({ sampleRate: 16000 });
       const outputAudioCtx = new AudioContext({ sampleRate: 24000 });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

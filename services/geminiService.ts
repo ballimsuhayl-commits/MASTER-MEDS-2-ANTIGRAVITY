@@ -3,7 +3,11 @@ import { GoogleGenAI, Type, Chat, Modality } from "@google/genai";
 import { Medication, DiaryEntry, SafetyAnalysis, FlareForecast, DietPlan, Symptom, Injection } from "../types";
 
 const getAIClient = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    console.warn("API Key missing: Please set VITE_GEMINI_API_KEY in .env.local or Vercel Settings.");
+  }
+  return new GoogleGenAI({ apiKey: apiKey || "MISSING_KEY" });
 };
 
 let activeChatSession: Chat | null = null;
@@ -12,9 +16,9 @@ export const startChat = (meds: Medication[], conditions: string[]) => {
   const ai = getAIClient();
   const medContext = meds.map(m => `${m.n} (${m.d})`).join(', ');
   const conditionContext = conditions.length > 0 ? `The patient has the following medical conditions: ${conditions.join(', ')}.` : "No specific conditions listed yet.";
-  
+
   activeChatSession = ai.chats.create({
-    model: 'gemini-flash-lite-latest',
+    model: 'gemini-1.5-flash',
     config: {
       systemInstruction: `You are Doctor B, a world-class Senior Consultant Physician and Clinical Specialist. 
       ${conditionContext}
@@ -38,9 +42,9 @@ export const runClinicalAnalysis = async (meds: Medication[], diary: DiaryEntry[
   const recentDiary = diary.slice(0, 10).map(d => `${d.time}: ${d.text}`).join('\n');
   const symptomList = symptoms.slice(0, 10).map(s => `${s.name} (Severity: ${s.severity}/10)`).join(', ');
   const conditionText = conditions.join(', ');
-  
+
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-1.5-pro',
     contents: `Clinical Profile: ${conditionText}. Meds taken: ${medHistory}. Symptoms reported: ${symptomList}. Diary logs: ${recentDiary}.`,
     config: {
       systemInstruction: "Identify drug-drug interactions or side effects based on patient conditions.",
@@ -63,7 +67,7 @@ export const runClinicalAnalysis = async (meds: Medication[], diary: DiaryEntry[
 export const generateReminderAudio = async (text: string): Promise<string | undefined> => {
   const ai = getAIClient();
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-tts",
+    model: "gemini-1.5-flash",
     contents: { parts: [{ text: `Say this in a gentle medical voice: ${text}` }] },
     config: {
       responseModalities: [Modality.AUDIO],
@@ -76,7 +80,7 @@ export const generateReminderAudio = async (text: string): Promise<string | unde
 export const analyzePrescription = async (base64Image: string): Promise<{ meds: Medication[], injections: Injection[] }> => {
   const ai = getAIClient();
   const response = await ai.models.generateContent({
-    model: 'gemini-flash-lite-latest',
+    model: 'gemini-1.5-flash',
     contents: {
       parts: [
         { text: "Extract all medications. Identify if it's a pill or injection (e.g. Humira, MTX are injections). For injections, provide site and frequency." },
